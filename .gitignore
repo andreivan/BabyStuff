@@ -1,9 +1,29 @@
-# Dependencies
-.psci_modules
-.spago
-bower_components
+# dependencies
 node_modules
 
-# Generated files
-.psci
-output
+# next.js
+.next
+out
+
+# production
+build
+
+# env files
+.env*.local
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode
