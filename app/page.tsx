@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, Children, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { isSupabaseConfigured, supabase } from "../lib/supabase";
+import { canUseLocalStorageFallback, isSupabaseConfigured, supabase } from "../lib/supabase";
 
 const ACCESS_CODE = "2026Baby";
 const AUTH_KEY = "baby-inventory-auth";
@@ -172,6 +172,10 @@ const babyItemStore = {
       return inserted.map(fromBabyItemRow);
     }
 
+    if (!canUseLocalStorageFallback) {
+      throw new Error("Supabase environment variables are missing in this production build.");
+    }
+
     if (typeof window === "undefined") return seedItems;
 
     try {
@@ -185,7 +189,10 @@ const babyItemStore = {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
   },
   async insert(item: BabyItem): Promise<BabyItem> {
-    if (!supabase) return item;
+    if (!supabase) {
+      if (canUseLocalStorageFallback) return item;
+      throw new Error("Supabase is not configured, so this production app cannot save items.");
+    }
 
     const { data, error } = await supabase
       .from("baby_items")
@@ -197,7 +204,10 @@ const babyItemStore = {
     return fromBabyItemRow(data);
   },
   async update(id: string, values: Partial<Pick<BabyItem, "owned" | "desired" | "note">>) {
-    if (!supabase) return;
+    if (!supabase) {
+      if (canUseLocalStorageFallback) return;
+      throw new Error("Supabase is not configured, so this production app cannot update items.");
+    }
 
     const { error } = await supabase
       .from("baby_items")
@@ -207,13 +217,19 @@ const babyItemStore = {
     if (error) throw error;
   },
   async remove(id: string) {
-    if (!supabase) return;
+    if (!supabase) {
+      if (canUseLocalStorageFallback) return;
+      throw new Error("Supabase is not configured, so this production app cannot delete items.");
+    }
 
     const { error } = await supabase.from("baby_items").delete().eq("id", id);
     if (error) throw error;
   },
   async replaceAll(items: BabyItem[]) {
-    if (!supabase) return;
+    if (!supabase) {
+      if (canUseLocalStorageFallback) return;
+      throw new Error("Supabase is not configured, so this production app cannot import items.");
+    }
 
     const { error: deleteError } = await supabase.from("baby_items").delete().neq("name", "");
     if (deleteError) throw deleteError;
@@ -252,6 +268,10 @@ const babyGroupStore = {
       return uniqueGroups([...defaultCategories, ...data.map((group: BabyGroupRow) => group.name), ...items.map((item) => item.category)]);
     }
 
+    if (!canUseLocalStorageFallback) {
+      throw new Error("Supabase environment variables are missing in this production build.");
+    }
+
     if (typeof window === "undefined") return defaultCategories;
 
     try {
@@ -274,7 +294,12 @@ const babyGroupStore = {
       return;
     }
 
-    window.localStorage.setItem(GROUPS_KEY, JSON.stringify(uniqueGroups(groups)));
+    if (canUseLocalStorageFallback) {
+      window.localStorage.setItem(GROUPS_KEY, JSON.stringify(uniqueGroups(groups)));
+      return;
+    }
+
+    throw new Error("Supabase is not configured, so this production app cannot save groups.");
   },
 };
 
@@ -340,10 +365,10 @@ export default function Home() {
         setItems(savedItems);
         setCategories(savedCategories);
         setSyncError("");
-      } catch {
+      } catch (error) {
         setItems(seedItems);
         setCategories(defaultCategories);
-        setSyncError("Supabase could not load data. Check the API URL, publishable key, and that supabase-schema.sql has been run.");
+        setSyncError(`Supabase could not load data: ${getErrorMessage(error)}`);
       } finally {
         setIsAuthed(window.localStorage.getItem(AUTH_KEY) === "granted");
         setIsReady(true);
@@ -354,7 +379,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (isReady && !isSupabaseConfigured) babyItemStore.saveLocal(items);
+    if (isReady && !isSupabaseConfigured && canUseLocalStorageFallback) babyItemStore.saveLocal(items);
   }, [items, isReady]);
 
   useEffect(() => {
@@ -443,8 +468,8 @@ export default function Home() {
       const savedItem = await babyItemStore.insert(newItem);
       setItems((current) => current.map((item) => (item.id === newItem.id ? savedItem : item)));
       setSyncError("");
-    } catch {
-      setSyncError("Could not save the new item to Supabase. Check the API key, table setup, and policies.");
+    } catch (error) {
+      setSyncError(`Could not save the new item to Supabase: ${getErrorMessage(error)}`);
     }
   }
 
@@ -452,15 +477,15 @@ export default function Home() {
     const quantity = Math.max(field === "desired" ? 1 : 0, Number.parseInt(value, 10) || 0);
 
     setItems((current) => current.map((item) => (item.id === id ? { ...item, [field]: quantity } : item)));
-    babyItemStore.update(id, { [field]: quantity }).catch(() => {
-      setSyncError("Could not save that quantity change to Supabase.");
+    babyItemStore.update(id, { [field]: quantity }).catch((error) => {
+      setSyncError(`Could not save that quantity change to Supabase: ${getErrorMessage(error)}`);
     });
   }
 
   function updateNote(id: string, note: string) {
     setItems((current) => current.map((item) => (item.id === id ? { ...item, note: note.trim() || undefined } : item)));
-    babyItemStore.update(id, { note: note.trim() || undefined }).catch(() => {
-      setSyncError("Could not save that note to Supabase.");
+    babyItemStore.update(id, { note: note.trim() || undefined }).catch((error) => {
+      setSyncError(`Could not save that note to Supabase: ${getErrorMessage(error)}`);
     });
   }
 
@@ -478,21 +503,21 @@ export default function Home() {
     if (!itemToUpdate) return;
 
     if (itemToUpdate.owned === 0) {
-      babyItemStore.remove(id).catch(() => {
-        setSyncError("Could not remove that wishlist item from Supabase.");
+      babyItemStore.remove(id).catch((error) => {
+        setSyncError(`Could not remove that wishlist item from Supabase: ${getErrorMessage(error)}`);
       });
       return;
     }
 
-    babyItemStore.update(id, { desired: itemToUpdate.owned }).catch(() => {
-      setSyncError("Could not remove that item from the wishlist in Supabase.");
+    babyItemStore.update(id, { desired: itemToUpdate.owned }).catch((error) => {
+      setSyncError(`Could not remove that item from the wishlist in Supabase: ${getErrorMessage(error)}`);
     });
   }
 
   function deleteItem(id: string) {
     setItems((current) => current.filter((item) => item.id !== id));
-    babyItemStore.remove(id).catch(() => {
-      setSyncError("Could not delete that item from Supabase.");
+    babyItemStore.remove(id).catch((error) => {
+      setSyncError(`Could not delete that item from Supabase: ${getErrorMessage(error)}`);
     });
   }
 
@@ -606,6 +631,10 @@ export default function Home() {
         <section className="grid grid-cols-2 gap-3">
           <Stat label="Owned" value={totals.owned} />
           <Stat label="Wishlist" value={totals.wishlist} />
+        </section>
+
+        <section className="rounded-full border border-white/60 bg-rice/80 px-4 py-3 text-center text-xs uppercase tracking-[0.18em] text-sage-500 shadow-card">
+          Storage: {isSupabaseConfigured ? "Supabase cloud" : canUseLocalStorageFallback ? "Local dev fallback" : "Supabase missing"}
         </section>
 
         {syncError && (
